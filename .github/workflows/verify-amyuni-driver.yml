@@ -1,0 +1,74 @@
+name: Verify the Amyuni privacy resolution on Windows
+on:
+  push:
+    branches: [codex/amyuni-driver-test]
+permissions:
+  contents: read
+  actions: read
+env:
+  VCPKG_COMMIT_ID: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+  VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: '1'
+  CARGO_PROFILE_RELEASE_LTO: 'false'
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '32'
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bridge-artifact
+          path: .
+          github-token: ${{ github.token }}
+          run-id: 43696402756
+      - uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0
+        with:
+          version: '15.0.6'
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: '1.75'
+          targets: x86_64-pc-windows-msvc
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+      - name: Install native dependencies for the display test
+        run: |
+          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          $manifest.dependencies = @($manifest.dependencies | Where-Object { $_.name -notin @('ffmpeg', 'mfx-dispatch') })
+          $manifest.overrides = @()
+          $manifest | ConvertTo-Json -Depth 16 | Set-Content vcpkg.json -Encoding utf8NoBOM
+          & "$env:VCPKG_ROOT/vcpkg.exe" install --triplet x64-windows-static --x-install-root="$env:VCPKG_ROOT/installed"
+          exit $LASTEXITCODE
+      - name: Build the RustDesk display test executable
+        run: |
+          cargo test --locked --release --lib --features flutter --no-run
+          exit $LASTEXITCODE
+      - name: Exercise the actual Amyuni driver and Windows display topology
+        env:
+          RUSTDESK_TEST_AMYUNI_PRIVACY: '1'
+        run: |
+          $driver = Join-Path $env:RUNNER_TEMP 'amyuni-driver'
+          $archive = "$driver.zip"
+          Invoke-WebRequest https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive).Hash -ine '629b51e9944762bae73948171c65d09a79595cf4c771a82ebc003fbba5b24f51') { throw 'Unexpected driver archive' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $driver
+          $destination = 'target/release/deps/usbmmidd_v2'
+          New-Item $destination -ItemType Directory -Force | Out-Null
+          Copy-Item "$driver/usbmmidd_v2/usbmmIdd.inf","$driver/usbmmidd_v2/usbmmidd.cat","$driver/usbmmidd_v2/x64" -Destination $destination -Recurse
+          $test = @(Get-ChildItem 'target/release/deps' -File -Filter 'librustdesk-*.exe')
+          if ($test.Count -ne 1) { throw 'Expected one RustDesk test binary' }
+          $mt = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/10.*/x64/mt.exe" -File | Sort-Object FullName | Select-Object -Last 1
+          if (!$mt) { throw 'Windows manifest tool was not found' }
+          & $mt.FullName -nologo -manifest res/manifest.xml "-outputresource:$($test[0].FullName);#1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,BuildNumber | Format-List
+          & $test[0].FullName parses_saved_mode_within_amyuni_limits
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $test[0].FullName amyuni_privacy_resolution_survives_driver_reinstall --ignored --nocapture
+          exit $LASTEXITCODE

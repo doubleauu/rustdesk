@@ -30,6 +30,54 @@ use winapi::{
 pub(super) const PRIVACY_MODE_IMPL: &str = super::PRIVACY_MODE_IMPL_WIN_VIRTUAL_DISPLAY;
 
 const CONFIG_KEY_REG_RECOVERY: &str = "reg_recovery";
+const CONFIG_KEY_RESOLUTION: &str = "privacy-mode-2-resolution";
+const FALLBACK_RESOLUTION: (usize, usize) = (1920, 1080);
+const DEFAULT_AMYUNI_RESOLUTION: (usize, usize) = (3048, 2032);
+
+fn preferred_amyuni_resolution() -> (usize, usize) {
+    let saved = Config::get_option(CONFIG_KEY_RESOLUTION);
+    if saved.is_empty() {
+        let (width, height) = DEFAULT_AMYUNI_RESOLUTION;
+        Config::set_option(
+            CONFIG_KEY_RESOLUTION.to_owned(),
+            format!("{width}x{height}"),
+        );
+        return DEFAULT_AMYUNI_RESOLUTION;
+    }
+    parse_resolution(&saved).unwrap_or_else(|| {
+        log::warn!("Invalid privacy mode 2 resolution, using the fork default");
+        DEFAULT_AMYUNI_RESOLUTION
+    })
+}
+
+fn parse_resolution(value: &str) -> Option<(usize, usize)> {
+    let (width, height) = value.split_once('x')?;
+    let dimensions = (width.parse().ok()?, height.parse().ok()?);
+    if (1024..=3840).contains(&dimensions.0) && (768..=2160).contains(&dimensions.1) {
+        Some(dimensions)
+    } else {
+        None
+    }
+}
+
+fn apply_privacy_resolution(name: &str, preferred: Option<(usize, usize)>) {
+    if let Some((width, height)) = preferred {
+        let result = (|| -> ResultType<()> {
+            crate::platform::change_resolution(name, width, height)?;
+            let actual = crate::platform::current_resolution(name)?;
+            if (actual.width as usize, actual.height as usize) != (width, height) {
+                bail!("Windows reported {}x{}", actual.width, actual.height);
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => return,
+            Err(err) => log::warn!("Privacy mode 2 could not apply {width}x{height}: {err}"),
+        }
+    }
+    let (width, height) = FALLBACK_RESOLUTION;
+    allow_err!(crate::platform::change_resolution(name, width, height));
+}
 
 struct Display {
     dm: DEVMODEW,
@@ -324,8 +372,8 @@ impl PrivacyModeImpl {
     #[inline]
     fn default_display_modes() -> Vec<MonitorMode> {
         vec![MonitorMode {
-            width: 1920,
-            height: 1080,
+            width: FALLBACK_RESOLUTION.0 as _,
+            height: FALLBACK_RESOLUTION.1 as _,
             sync: 60,
         }]
     }
@@ -334,10 +382,21 @@ impl PrivacyModeImpl {
     // It's ok to wait, because:
     // 1. A new thread is created to handle the async privacy mode.
     // 2. The user is usually not in a hurry to turn on the privacy mode.
-    pub fn ensure_virtual_display(&mut self, is_async_mode: bool) -> ResultType<()> {
+    fn ensure_virtual_display(
+        &mut self,
+        is_async_mode: bool,
+        preferred: Option<(usize, usize)>,
+    ) -> ResultType<()> {
         if self.virtual_displays.is_empty() {
-            let displays =
-                virtual_display_manager::plug_in_peer_request(vec![Self::default_display_modes()])?;
+            let displays = match preferred {
+                Some(resolution) => {
+                    virtual_display_manager::amyuni_idd::plug_in_privacy_monitor(resolution)?;
+                    vec![0]
+                }
+                None => virtual_display_manager::plug_in_peer_request(vec![
+                    Self::default_display_modes(),
+                ])?,
+            };
             if is_async_mode {
                 thread::sleep(Duration::from_secs(1));
             }
@@ -359,6 +418,8 @@ impl PrivacyModeImpl {
             }
 
             self.virtual_displays_added.extend(displays);
+        } else if let Some(resolution) = preferred {
+            virtual_display_manager::amyuni_idd::register_privacy_resolution(resolution, false);
         }
 
         Ok(())
@@ -472,12 +533,13 @@ impl PrivacyMode for PrivacyModeImpl {
         }
 
         let is_async_mode = self.is_async_privacy_mode();
+        let preferred = virtual_display_manager::is_amyuni_idd().then(preferred_amyuni_resolution);
         let mut guard = TurnOnGuard {
             privacy_mode: self,
             succeeded: false,
         };
 
-        guard.ensure_virtual_display(is_async_mode)?;
+        guard.ensure_virtual_display(is_async_mode, preferred)?;
         if guard.virtual_displays.is_empty() {
             log::debug!("No virtual displays");
             bail!("No virtual displays.");
@@ -487,12 +549,7 @@ impl PrivacyMode for PrivacyModeImpl {
         let primary_display_name = guard.set_primary_display()?;
         guard.disable_physical_displays()?;
         Self::commit_change_display(CDS_RESET)?;
-        // Explicitly set the resolution(virtual display) to 1920x1080.
-        allow_err!(crate::platform::change_resolution(
-            &primary_display_name,
-            1920,
-            1080
-        ));
+        apply_privacy_resolution(&primary_display_name, preferred);
         let reg_connectivity_2 = reg_display_settings::read_reg_connectivity()?;
 
         if let Some(reg_recovery) =
@@ -583,4 +640,76 @@ pub fn restore_reg_connectivity(plug_out_monitors: bool, force: bool) {
         }
     }
     reset_config_reg_connectivity();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_saved_mode_within_amyuni_limits() {
+        assert_eq!(parse_resolution("3048x2032"), Some((3048, 2032)));
+        assert_eq!(parse_resolution("3840x2161"), None);
+        assert_eq!(parse_resolution("3048,2032"), None);
+    }
+
+    #[test]
+    #[ignore = "changes the display topology and reinstalls the driver on a disposable Windows runner"]
+    fn amyuni_privacy_resolution_survives_driver_reinstall() {
+        use crate::virtual_display_manager::amyuni_idd;
+
+        assert_eq!(
+            std::env::var("RUSTDESK_TEST_AMYUNI_PRIVACY").as_deref(),
+            Ok("1")
+        );
+        assert!(virtual_display_manager::is_amyuni_idd());
+        Config::set_option(CONFIG_KEY_RESOLUTION.to_owned(), String::new());
+        for _ in 0..2 {
+            amyuni_idd::uninstall_driver().expect("remove Amyuni before reinstallation");
+            for _ in 0..2 {
+                let mut privacy = PrivacyModeImpl::new(PRIVACY_MODE_IMPL);
+                let mut before = PrivacyModeImpl::new(PRIVACY_MODE_IMPL);
+                before.set_displays();
+                assert!(
+                    !before.displays.is_empty(),
+                    "the test needs an active physical display"
+                );
+                assert!(privacy.turn_on_privacy(1).expect("enable privacy mode 2"));
+                let name = String::from_utf16_lossy(&privacy.virtual_displays[0].name);
+                let resolution = crate::platform::current_resolution(&name);
+                privacy
+                    .turn_off_privacy(1, None)
+                    .expect("disable privacy mode 2");
+                let resolution = resolution.expect("read the active privacy monitor resolution");
+                assert_eq!((resolution.width, resolution.height), (3048, 2032));
+                assert_eq!(Config::get_option(CONFIG_KEY_RESOLUTION), "3048x2032");
+                let mut after = PrivacyModeImpl::new(PRIVACY_MODE_IMPL);
+                after.set_displays();
+                assert_eq!(
+                    before
+                        .displays
+                        .iter()
+                        .map(|display| (
+                            display.name,
+                            display.dm.dmPelsWidth,
+                            display.dm.dmPelsHeight,
+                            display.primary
+                        ))
+                        .collect::<Vec<_>>(),
+                    after
+                        .displays
+                        .iter()
+                        .map(|display| (
+                            display.name,
+                            display.dm.dmPelsWidth,
+                            display.dm.dmPelsHeight,
+                            display.primary
+                        ))
+                        .collect::<Vec<_>>(),
+                    "turning off privacy mode restores the original display"
+                );
+            }
+        }
+        amyuni_idd::uninstall_driver().expect("clean up Amyuni driver");
+    }
 }

@@ -395,8 +395,14 @@ pub mod amyuni_idd {
         shared::{guiddef::GUID, winerror::ERROR_NO_MORE_ITEMS},
         um::shellapi::ShellExecuteA,
     };
+    use winreg::{
+        enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY, KEY_WRITE},
+        RegKey,
+    };
 
     const INF_PATH: &str = r#"usbmmidd_v2\usbmmIdd.inf"#;
+    const MONITOR_MODES_KEY: &str =
+        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\WUDF\Services\usbmmIdd\Parameters\Monitors";
     const INTERFACE_GUID: GUID = GUID {
         Data1: 0xb5ffd75f,
         Data2: 0xda40,
@@ -572,10 +578,13 @@ pub mod amyuni_idd {
         add: bool,
         is_driver_async_installed: bool,
         wait_timeout: Option<Duration>,
+        reset_first_resolution: bool,
     ) -> ResultType<()> {
         let timeout = Duration::from_secs(3);
         let now = Instant::now();
-        let reg_connectivity_old = reg_display_settings::read_reg_connectivity();
+        let old_connectivity = reset_first_resolution
+            .then(reg_display_settings::read_reg_connectivity)
+            .and_then(Result::ok);
         loop {
             match plug_monitor_(add, wait_timeout) {
                 Ok(_) => {
@@ -597,9 +606,9 @@ pub mod amyuni_idd {
             }
         }
         // Workaround for the issue that we can't set the default the resolution.
-        if let Ok(old_connectivity_old) = reg_connectivity_old {
+        if let Some(old_connectivity) = old_connectivity {
             std::thread::spawn(move || {
-                try_reset_resolution_on_first_plug_in(old_connectivity_old.len(), 1920, 1080);
+                try_reset_resolution_on_first_plug_in(old_connectivity.len(), 1920, 1080);
             });
         }
 
@@ -642,10 +651,18 @@ pub mod amyuni_idd {
             bail!("Failed to install driver.");
         }
 
-        plug_in_monitor_(true, is_async, Some(Duration::from_millis(3_000)))
+        plug_in_monitor_(true, is_async, Some(Duration::from_millis(3_000)), true)
     }
 
     pub fn plug_in_monitor() -> ResultType<()> {
+        plug_in_monitor_with_resolution(None)
+    }
+
+    pub(crate) fn plug_in_privacy_monitor(resolution: (usize, usize)) -> ResultType<()> {
+        plug_in_monitor_with_resolution(Some(resolution))
+    }
+
+    fn plug_in_monitor_with_resolution(resolution: Option<(usize, usize)>) -> ResultType<()> {
         let mut is_async = false;
         if let Err(e) = check_install_driver(&mut is_async) {
             log::error!("Failed to install driver: {}", e);
@@ -656,7 +673,62 @@ pub mod amyuni_idd {
             bail!("There are already {VIRTUAL_DISPLAY_MAX_COUNT} monitors plugged in.");
         }
 
-        plug_in_monitor_(true, is_async, None)
+        if let Some(resolution) = resolution {
+            register_privacy_resolution(resolution, is_async);
+        }
+        // Privacy mode applies its resolution after committing the new topology.
+        plug_in_monitor_(true, is_async, None, resolution.is_none())
+    }
+
+    pub(crate) fn register_privacy_resolution(resolution: (usize, usize), wait_for_driver: bool) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match ensure_monitor_mode(resolution) {
+                Ok(()) => return,
+                Err(err) => {
+                    if wait_for_driver
+                        && err.kind() == std::io::ErrorKind::NotFound
+                        && Instant::now() < deadline
+                    {
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    log::warn!("Could not register Amyuni privacy mode resolution: {err}");
+                    return;
+                }
+            }
+        }
+    }
+
+    fn ensure_monitor_mode((width, height): (usize, usize)) -> std::io::Result<()> {
+        let _guard = LOCK.lock().unwrap();
+        let monitors = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey_with_flags(MONITOR_MODES_KEY, KEY_READ | KEY_WRITE | KEY_WOW64_64KEY)?;
+        let mode = format!("{width},{height}");
+        let mut free_slot = None;
+        // Amyuni supports ten numbered entries. Keep existing modes and the unnamed default.
+        for slot in 0..10 {
+            let slot = slot.to_string();
+            match monitors.get_raw_value(&slot) {
+                Ok(value) => {
+                    use winreg::types::FromRegValue;
+                    if String::from_reg_value(&value).ok().as_deref() == Some(mode.as_str()) {
+                        return Ok(());
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    free_slot.get_or_insert(slot);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        let Some(slot) = free_slot else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "all ten monitor modes are in use",
+            ));
+        };
+        monitors.set_value(&slot, &mode)
     }
 
     // `index` the display index to plug out. -1 means plug out all.

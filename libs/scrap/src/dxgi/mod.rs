@@ -1,4 +1,5 @@
 use std::{io, mem, ptr, slice};
+mod amyuni;
 pub mod gdi;
 pub use gdi::CapturerGDI;
 pub mod hdr;
@@ -76,13 +77,23 @@ impl Capturer {
         let mut device = ptr::null_mut();
         let mut context = ptr::null_mut();
         let mut duplication = ptr::null_mut();
-        #[allow(invalid_value)]
-        let mut desc = unsafe { mem::MaybeUninit::uninit().assume_init() };
-        #[allow(invalid_value)]
-        let mut adapter_desc1 = unsafe { mem::MaybeUninit::uninit().assume_init() };
-        let mut gdi_capturer = None;
+        let mut desc: DXGI_OUTDUPL_DESC = unsafe { mem::zeroed() };
+        let mut adapter_desc1: DXGI_ADAPTER_DESC1 = unsafe { mem::zeroed() };
+        // Desktop Duplication can include the Amyuni cursor in the image itself.
+        // GDI leaves the cursor to RustDesk's separate cursor service.
+        let mut gdi_capturer = if !display.gdi && amyuni::has_monitor(&display.desc.DeviceName) {
+            let capturer = display.create_gdi();
+            if capturer.is_none() {
+                hbb_common::log::trace!("Could not open GDI capture for an Amyuni display");
+            }
+            capturer
+        } else {
+            None
+        };
 
-        let mut res = if display.gdi {
+        let mut res = if gdi_capturer.is_some() {
+            Ok(())
+        } else if display.gdi {
             wrap_hresult(1)
         } else {
             let res = wrap_hresult(unsafe {
@@ -114,7 +125,7 @@ impl Capturer {
             if gdi_capturer.is_some() {
                 res = Ok(());
             }
-        } else {
+        } else if gdi_capturer.is_none() {
             res = wrap_hresult(unsafe {
                 let hres = Self::duplicate_output(&display, device.0, &mut duplication);
                 if hres != S_OK {

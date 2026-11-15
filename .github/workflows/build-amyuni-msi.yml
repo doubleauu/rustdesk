@@ -31,12 +31,12 @@ jobs:
         with:
           name: rustdesk-amyuni-windows-x64
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.windows_run_id || '43708595574' }}
+          run-id: ${{ inputs.windows_run_id || '43724774982' }}
           path: windows-bundle
       - uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce
       - name: Build and verify in-place MSI upgrade
         env:
-          WINDOWS_BUILD_COMMIT: ${{ inputs.windows_build_commit || '5b09eb43e8e26e1064a38565c9e6bf6392c065ba' }}
+          WINDOWS_BUILD_COMMIT: ${{ inputs.windows_build_commit || '4720d0a658c6c777e4f90ec0dba3759e71527d69' }}
         run: .github/scripts/build-amyuni-msi.ps1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()

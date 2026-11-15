@@ -21,28 +21,24 @@ $recordedCommit = (Get-Content -LiteralPath (Join-Path $windowsBundle 'build-com
 if ($recordedCommit -cne $env:WINDOWS_BUILD_COMMIT) { throw 'Unexpected Windows bundle commit' }
 git fetch origin $recordedCommit
 if ($LASTEXITCODE -ne 0) { throw 'Could not fetch bundle source commit' }
-git merge-base --is-ancestor 528c6d6dd3f181bb1b0b633623b05b4bea20972f $recordedCommit
-if ($LASTEXITCODE -ne 0) { throw 'Windows bundle does not contain the Amyuni fix' }
+git merge-base --is-ancestor 51e3963f $recordedCommit
+if ($LASTEXITCODE -ne 0) { throw 'Windows bundle does not contain the preferred privacy resolution' }
 Remove-Item -LiteralPath (Join-Path $windowsBundle 'build-commit.txt')
 
-$upstreamMsi = Join-Path $repo 'rustdesk-upstream-1.5.3-x64.msi'
-Invoke-WebRequest 'https://github.com/rustdesk/rustdesk/releases/download/1.5.3/rustdesk-1.5.3-x86_64.msi' -OutFile $upstreamMsi
-if ((Get-FileHash -LiteralPath $upstreamMsi).Hash -ine '27f6bfb48a93d524860dd7f4a79e349be14b6dc71295746cf132a060ba4869c8') {
-    throw 'Official MSI digest differs from the pinned release asset'
+$previousMsi = Join-Path $repo 'rustdesk-1.5.3-amyuni.1-x86_64.msi'
+Invoke-WebRequest 'https://github.com/doubleauu/rustdesk/releases/download/v1.5.3-amyuni.1/rustdesk-1.5.3-amyuni.1-x86_64.msi' -OutFile $previousMsi
+if ((Get-FileHash -LiteralPath $previousMsi).Hash -ine 'c9f7ec8b32e3a9200f04630bb26fe796a2574cc88a4a63c0e4a46cd8a70fc124') {
+    throw 'Previous MSI digest differs from the pinned release asset'
 }
-$signature = Get-AuthenticodeSignature -LiteralPath $upstreamMsi
-if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=PURSLANE') {
-    throw 'Official MSI signature did not verify'
-}
-Install-Msi $upstreamMsi '01-official-install'
+Install-Msi $previousMsi '01-previous-release-install'
 
 $stateKey = 'HKLM:\SOFTWARE\RustDesk\InstallState\RustDesk'
 $initial = Get-ItemProperty -LiteralPath $stateKey
 $installDir = $initial.InstallLocation
 $oldProduct = $initial.MsiProductCode
-if (!$oldProduct -or !$installDir) { throw 'Official MSI did not register its installation' }
+if (!$oldProduct -or !$installDir) { throw 'Previous MSI did not register its installation' }
 $uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
-if (!(Test-Path -LiteralPath (Join-Path $uninstallKey $oldProduct))) { throw 'Missing official product registration' }
+if (!(Test-Path -LiteralPath (Join-Path $uninstallKey $oldProduct))) { throw 'Missing previous product registration' }
 
 # This Flutter artifact omits the drivers and Windows helper binaries. Take them
 # from the verified, installed x64 distribution. Runtime-only helpers may be absent.
@@ -69,7 +65,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'WiX package build failed' }
     $built = @(Get-ChildItem -Path 'Package/bin/*/Release/en-us/Package.msi' -File)
     if ($built.Count -ne 1) { throw 'Expected a single built x64 MSI' }
-    $msi = Join-Path $releaseDirectory 'rustdesk-1.5.3-amyuni.1-x86_64.msi'
+    $msi = Join-Path $releaseDirectory 'rustdesk-1.5.3-amyuni.2-x86_64.msi'
     Copy-Item -LiteralPath $built[0].FullName -Destination $msi
 } finally {
     Pop-Location
@@ -86,7 +82,12 @@ $configDirectories = @(
 foreach ($dir in $configDirectories) {
     New-Item -ItemType Directory -Path (Join-Path $dir 'peers') -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $dir 'RustDesk.toml') -Value "id = '721234567'" -Encoding ascii
-    Set-Content -LiteralPath (Join-Path $dir 'RustDesk2.toml') -Value @('[options]', "custom-rendezvous-server = '127.0.0.1:21116'", "relay-server = '127.0.0.1:21117'") -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $dir 'RustDesk2.toml') -Value @(
+        '[options]',
+        "custom-rendezvous-server = '127.0.0.1:21116'",
+        "relay-server = '127.0.0.1:21117'",
+        "privacy-mode-2-resolution = '3048x2032'"
+    ) -Encoding ascii
     Set-Content -LiteralPath (Join-Path $dir 'peers\754321012.toml') -Value "alias = 'upgrade-smoke-test'" -Encoding ascii
 }
 Start-Service RustDesk
@@ -95,7 +96,7 @@ Install-Msi $msi '02-fork-upgrade'
 $upgraded = Get-ItemProperty -LiteralPath $stateKey
 if ($upgraded.InstallLocation -ine $installDir) { throw 'The upgrade moved the installation' }
 if (!$upgraded.MsiProductCode -or $upgraded.MsiProductCode -eq $oldProduct) { throw 'MSI product registration did not upgrade' }
-if (Test-Path -LiteralPath (Join-Path $uninstallKey $oldProduct)) { throw 'Official MSI was left registered alongside the fork' }
+if (Test-Path -LiteralPath (Join-Path $uninstallKey $oldProduct)) { throw 'The previous MSI was left registered alongside the upgrade' }
 if ((Get-FileHash -LiteralPath (Join-Path $installDir 'librustdesk.dll')).Hash -ne $expectedDll) { throw 'Patched DLL was not installed' }
 $installedExe = Join-Path $installDir 'rustdesk.exe'
 if ((Get-FileHash -LiteralPath $installedExe).Hash -ne $expectedExe) { throw 'Patched executable was not installed' }
@@ -115,6 +116,7 @@ if ($probe.ExitCode -ne 0 -or !$appBuildDate -or $appBuildDate -ne $upgraded.Bui
 foreach ($dir in $configDirectories) {
     if (!(Select-String -Quiet -SimpleMatch '721234567' -LiteralPath (Join-Path $dir 'RustDesk.toml'))) { throw "Device ID was lost from $dir" }
     if (!(Select-String -Quiet -SimpleMatch '127.0.0.1:21116' -LiteralPath (Join-Path $dir 'RustDesk2.toml'))) { throw "Server settings were lost from $dir" }
+    if (!(Select-String -Quiet -SimpleMatch '3048x2032' -LiteralPath (Join-Path $dir 'RustDesk2.toml'))) { throw "Privacy mode resolution was lost from $dir" }
     if (!(Select-String -Quiet -SimpleMatch 'upgrade-smoke-test' -LiteralPath (Join-Path $dir 'peers\754321012.toml'))) { throw "Peer history was lost from $dir" }
 }
 Write-Host "Upgraded $oldProduct to $($upgraded.MsiProductCode) at $installDir"

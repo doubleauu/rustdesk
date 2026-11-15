@@ -1,0 +1,51 @@
+name: Package and test the Windows x64 upgrade
+on:
+  push:
+    branches: [codex/amyuni-msi-release]
+    paths:
+      - '.github/workflows/build-amyuni-msi.yml'
+      - '.github/scripts/build-amyuni-msi.ps1'
+  workflow_dispatch:
+    inputs:
+      windows_run_id:
+        description: 'Successful x64 Flutter bundle run on this fork'
+        required: true
+      windows_build_commit:
+        description: 'Full source commit recorded in the bundle'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rustdesk-amyuni-windows-x64
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.windows_run_id || '43708595574' }}
+          path: windows-bundle
+      - uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce
+      - name: Build and verify in-place MSI upgrade
+        env:
+          WINDOWS_BUILD_COMMIT: ${{ inputs.windows_build_commit || '5b09eb43e8e26e1064a38565c9e6bf6392c065ba' }}
+        run: .github/scripts/build-amyuni-msi.ps1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: windows-msi-upgrade-logs
+          path: windows-msi-logs/*.log
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rustdesk-amyuni-msi-x64
+          path: windows-release/*.msi
+          if-no-files-found: error

@@ -96,3 +96,20 @@ jobs:
           path: flutter/build/windows/x64/runner/Release
           if-no-files-found: error
           retention-days: 7
+
+      - name: Verify Amyuni driver reinstallation and privacy mode toggles
+        env:
+          RUSTDESK_TEST_AMYUNI_PRIVACY: '1'
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'usbmmidd_v2.zip'
+          $driver = Join-Path $env:RUNNER_TEMP 'amyuni-driver'
+          Invoke-WebRequest https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $driver
+          $destination = 'target/release/deps/usbmmidd_v2'
+          New-Item $destination -ItemType Directory -Force | Out-Null
+          Copy-Item "$driver/usbmmidd_v2/usbmmIdd.inf","$driver/usbmmidd_v2/usbmmidd.cat","$driver/usbmmidd_v2/x64" -Destination $destination -Recurse
+          $features = (python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram --print-features).Trim()
+          cargo test --locked --release --lib --features "$features" parses_saved_mode_within_amyuni_limits
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --release --lib --features "$features" amyuni_privacy_resolution_survives_driver_reinstall -- --ignored --nocapture
+          exit $LASTEXITCODE

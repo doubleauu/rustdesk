@@ -1,0 +1,98 @@
+name: Build Windows RustDesk with the Amyuni cursor fix
+on:
+  push:
+    branches: [codex/amyuni-windows-build]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  VCPKG_COMMIT_ID: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Restore verified bridge from the same Flutter source
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bridge-artifact
+          path: .
+          github-token: ${{ github.token }}
+          run-id: 43696402756
+
+      - uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0
+        with:
+          version: '15.0.6'
+
+      - uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225
+        id: flutter
+        with:
+          channel: stable
+          flutter-version: '3.24.5'
+          architecture: x64
+
+      - name: Use the RustDesk Flutter x64 engine
+        run: |
+          flutter precache --windows
+          Invoke-WebRequest https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile engine.zip
+          Expand-Archive -LiteralPath engine.zip -DestinationPath engine
+          Copy-Item -Path engine/* -Destination '${{ steps.flutter.outputs.CACHE-PATH }}/bin/cache/artifacts/engine/windows-x64-release' -Recurse -Force
+          git -C '${{ steps.flutter.outputs.CACHE-PATH }}' apply "$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: '1.75'
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install native dependencies
+        run: |
+          & "$env:VCPKG_ROOT/vcpkg.exe" install --triplet x64-windows-static --x-install-root="$env:VCPKG_ROOT/installed"
+          if ($LASTEXITCODE -ne 0) {
+            Get-ChildItem "$env:VCPKG_ROOT/buildtrees" -Recurse -Filter "*-err.log" | ForEach-Object {
+              Write-Host $_.FullName
+              Get-Content -LiteralPath $_.FullName -Tail 80
+            }
+            exit 1
+          }
+
+      - name: Build Windows Flutter client
+        run: |
+          python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bundle = "flutter/build/windows/x64/runner/Release"
+          foreach ($name in 'rustdesk.exe', 'librustdesk.dll', 'dylib_virtual_display.dll', 'data/app.so') {
+            if (!(Test-Path -LiteralPath "$bundle/$name" -PathType Leaf)) { throw "Missing $name" }
+          }
+          git rev-parse HEAD | Set-Content "$bundle/build-commit.txt" -Encoding ascii
+
+      - name: Upload Windows client bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rustdesk-amyuni-windows-x64
+          path: flutter/build/windows/x64/runner/Release
+          if-no-files-found: error
+          retention-days: 7

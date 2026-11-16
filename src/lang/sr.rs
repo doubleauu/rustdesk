@@ -826,5 +826,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("install-directory-not-empty-tip", "Izabrani direktorijum nije prazan. Instalacija može da obriše postojeće podatke. Razmislite o izboru drugog direktorijuma."),
         ("Request approval", "Zatraži odobrenje"),
         ("Forever", "Zauvek"),
+        ("Privacy mode 1 mask", ""),
+        ("Custom image", ""),
+        ("Default black", ""),
+        ("Applies the next time privacy mode 1 is enabled", ""),
+        ("Choose image", ""),
+        ("Restore default", ""),
+        ("Could not change the privacy mode 1 mask", ""),
     ].iter().cloned().collect();
 }

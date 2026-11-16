@@ -826,5 +826,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("install-directory-not-empty-tip", "Le dossier sélectionné n’est pas vide. L’installation peut supprimer des données existantes. Envisagez de choisir un autre dossier."),
         ("Request approval", "Demander l'approbation"),
         ("Forever", "Pour toujours"),
+        ("Privacy mode 1 mask", ""),
+        ("Custom image", ""),
+        ("Default black", ""),
+        ("Applies the next time privacy mode 1 is enabled", ""),
+        ("Choose image", ""),
+        ("Restore default", ""),
+        ("Could not change the privacy mode 1 mask", ""),
     ].iter().cloned().collect();
 }

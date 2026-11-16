@@ -826,5 +826,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("install-directory-not-empty-tip", "Folderul selectat nu este gol. Instalarea poate șterge datele existente. Ia în considerare alegerea altui folder."),
         ("Request approval", "Solicită aprobarea"),
         ("Forever", "Pentru totdeauna"),
+        ("Privacy mode 1 mask", ""),
+        ("Custom image", ""),
+        ("Default black", ""),
+        ("Applies the next time privacy mode 1 is enabled", ""),
+        ("Choose image", ""),
+        ("Restore default", ""),
+        ("Could not change the privacy mode 1 mask", ""),
     ].iter().cloned().collect();
 }

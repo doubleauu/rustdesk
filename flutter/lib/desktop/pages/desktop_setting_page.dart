@@ -16,6 +16,7 @@ import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'package:flutter_hbb/mobile/widgets/dialog.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:flutter_hbb/models/privacy_mode_1_mask.dart';
 import 'package:flutter_hbb/models/printer_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
 import 'package:flutter_hbb/models/shortcut_model.dart';
@@ -1021,6 +1022,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
   bool locked = bind.mainIsInstalled();
+  bool _privacyMaskBusy = false;
   final scrollController = ScrollController();
 
   @override
@@ -1038,6 +1040,10 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
               block: locked,
               child: Column(children: [
                 permissions(context),
+                if (isWindows &&
+                    bind.mainSupportedPrivacyModeImpls().contains(
+                        '"privacy_mode_impl_mag_tip"'))
+                  privacyMode1Mask(),
                 password(context),
                 _Card(title: '2FA', children: [tfa()]),
                 if (!isChangeIdDisabled())
@@ -1047,6 +1053,66 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
             ),
           ],
         )).marginOnly(bottom: _kListViewBottomMargin);
+  }
+
+  Widget privacyMode1Mask() {
+    File? mask;
+    var custom = false;
+    try {
+      final file = privacyMode1MaskFile();
+      custom = file.existsSync();
+      mask = file;
+    } catch (error) {
+      debugPrint('Could not read the privacy mode 1 mask: $error');
+    }
+    final enabled = !locked && !_privacyMaskBusy && mask != null;
+    return _Card(
+      title: 'Privacy mode 1 mask',
+      children: [
+        Text(translate(custom ? 'Custom image' : 'Default black')),
+        Text(translate('Applies the next time privacy mode 1 is enabled')),
+        Wrap(
+          spacing: 8,
+          children: [
+            OutlinedButton(
+              onPressed: enabled
+                  ? () => changePrivacyMode1Mask(mask, false)
+                  : null,
+              child: Text(translate('Choose image')),
+            ),
+            OutlinedButton(
+              onPressed: enabled && custom
+                  ? () => changePrivacyMode1Mask(mask, true)
+                  : null,
+              child: Text(translate('Restore default')),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> changePrivacyMode1Mask(File? mask, bool reset) async {
+    if (mask == null || _privacyMaskBusy) return;
+    setState(() => _privacyMaskBusy = true);
+    try {
+      if (reset) {
+        await resetPrivacyMode1Mask(mask);
+      } else {
+        final selected = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: ['png', 'jpg', 'jpeg', 'bmp', 'webp'],
+        );
+        final source = selected?.files.single.path;
+        if (source != null) await savePrivacyMode1Mask(File(source), mask);
+      }
+    } catch (error) {
+      debugPrint('Could not change the privacy mode 1 mask: $error');
+      if (mounted)
+        showToast(translate('Could not change the privacy mode 1 mask'));
+    } finally {
+      if (mounted) setState(() => _privacyMaskBusy = false);
+    }
   }
 
   Widget tfa() {

@@ -826,5 +826,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("install-directory-not-empty-tip", "所选文件夹不为空。安装可能删除现有数据。建议选择其他文件夹。"),
         ("Request approval", "请求批准"),
         ("Forever", "永久"),
+        ("Privacy mode 1 mask", "隐私模式 1 屏幕遮罩"),
+        ("Custom image", "自定义图片"),
+        ("Default black", "默认纯黑"),
+        ("Applies the next time privacy mode 1 is enabled", "下次启用隐私模式 1 时生效"),
+        ("Choose image", "选择图片"),
+        ("Restore default", "恢复默认"),
+        ("Could not change the privacy mode 1 mask", "无法更改隐私模式 1 的遮罩"),
     ].iter().cloned().collect();
 }

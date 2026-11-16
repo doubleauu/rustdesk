@@ -1108,8 +1108,9 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
       }
     } catch (error) {
       debugPrint('Could not change the privacy mode 1 mask: $error');
-      if (mounted)
+      if (mounted) {
         showToast(translate('Could not change the privacy mode 1 mask'));
+      }
     } finally {
       if (mounted) setState(() => _privacyMaskBusy = false);
     }

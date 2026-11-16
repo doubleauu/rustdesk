@@ -1,0 +1,31 @@
+name: Verify Windows privacy mode 1 mask
+on:
+  push:
+    branches: [codex/privacy-mode-1-mask-verify]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Build the patched helper and test its mask and capture exclusion
+        run: |
+          git clone --quiet https://github.com/rustdesk-org/RustDeskTempTopMostWindow RustDeskTempTopMostWindow
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C RustDeskTempTopMostWindow checkout --detach ecd8d6a139eee76845ea66423fb739af450fda90
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C RustDeskTempTopMostWindow apply --ignore-space-change "$PWD/.github/patches/window-injection-custom-mask.patch"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
+          msbuild RustDeskTempTopMostWindow/WindowInjection/WindowInjection.vcxproj -p:Configuration=Release -p:Platform=x64 -p:PlatformToolset=v143
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl.exe /nologo /std:c++17 /EHsc /DUNICODE /D_UNICODE .github/scripts/verify_privacy_mask.cpp /Fe:verify_privacy_mask.exe /link user32.lib /manifest:embed "/manifestinput:$PWD/res/manifest.xml"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./verify_privacy_mask.exe
+          exit $LASTEXITCODE
